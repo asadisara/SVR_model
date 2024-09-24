@@ -1,0 +1,152 @@
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.svm import SVR
+from sklearn.metrics import mean_squared_error, mean_absolute_error
+import numpy as np
+
+# Step 1: Load and Preprocess the Data
+
+data = pd.read_csv('Datos_ML_TT_streamflow3001.csv')
+
+# Convert 'Date' column to datetime format
+data['Date'] = pd.to_datetime(data['Date'])
+
+# Set 'Date' column as index
+data.set_index('Date', inplace=True)
+
+# Split data into training and testing sets
+train_data = data['1990-01-01':'2005-12-31']  # Note the changed start date
+test_data = data['2006-01-01':'2020-09-29']
+
+# Extract features (precipitation and Q(t-1)) and target (observed flow)
+X_train = train_data[['P(t)', 'Q(t-1)']].values
+y_train = train_data['Q(t)'].values
+X_test = test_data[['P(t)', 'Q(t-1)']].values
+y_test = test_data['Q(t)'].values
+
+# Step 2: Train the SVR Model
+svr = SVR(kernel='rbf', C=1, epsilon=0.5)  # Adjust hyperparameters as needed
+svr.fit(X_train, y_train)
+
+# Step 3: Predict using the Trained Model
+y_pred_train = svr.predict(X_train)
+y_pred_test = svr.predict(X_test)
+
+# Step 4: Evaluate Model Performance
+mse_train = mean_squared_error(y_train, y_pred_train)
+mse_test = mean_squared_error(y_test, y_pred_test)
+
+# Calculate Nash-Sutcliffe Efficiency (NSE) for training period
+nse_train = 1 - (sum((y_train - y_pred_train)**2) / sum((y_train - y_train.mean())**2))
+
+# Calculate Nash-Sutcliffe Efficiency (NSE) for test period
+nse_test = 1 - (sum((y_test - y_pred_test)**2) / sum((y_test - y_test.mean())**2))
+
+# Calculate Root Mean Squared Error (RMSE) for training period
+rmse_train = np.sqrt(mse_train)
+
+# Calculate Root Mean Squared Error (RMSE) for test period
+rmse_test = np.sqrt(mse_test)
+
+# Calculate Mean Absolute Error (MAE) for training period
+mae_train = mean_absolute_error(y_train, y_pred_train)
+
+# Calculate Mean Absolute Error (MAE) for test period
+mae_test = mean_absolute_error(y_test, y_pred_test)
+
+# Calculate Percent Bias (PBIAS) for training period
+p_bias_train = 100 * sum(y_pred_train - y_train) / sum(y_train)
+
+# Calculate Percent Bias (PBIAS) for test period
+p_bias_test = 100 * sum(y_pred_test - y_test) / sum(y_test)
+
+
+
+# Monthly metrics calculation
+def calculate_monthly_metrics(observed, simulated):
+    monthly_metrics = {
+        'NSE': [],
+        'RMSE': [],
+        'MAE': [],
+        'PBIAS': []
+    }
+
+    observed_df = pd.DataFrame({'Date': observed.index, 'Observed_Flow': observed.values})
+    simulated_df = pd.DataFrame({'Date': simulated.index, 'Modeled_Flow': simulated.values})
+
+    observed_df['Date'] = pd.to_datetime(observed_df['Date'])
+    simulated_df['Date'] = pd.to_datetime(simulated_df['Date'])
+
+    observed_df.set_index('Date', inplace=True)
+    simulated_df.set_index('Date', inplace=True)
+
+    for year_month, group in zip(observed_df.index.to_period('M'), observed_df.groupby(observed_df.index.to_period('M'))):
+        _, obs_data = group
+        sim_data = simulated_df.loc[obs_data.index]
+
+        nse = 1 - (sum((obs_data['Observed_Flow'] - sim_data['Modeled_Flow'])**2) / sum((obs_data['Observed_Flow'] - obs_data['Observed_Flow'].mean())**2))
+        rmse = np.sqrt(mean_squared_error(obs_data['Observed_Flow'], sim_data['Modeled_Flow']))
+        mae = mean_absolute_error(obs_data['Observed_Flow'], sim_data['Modeled_Flow'])
+        pbias = 100 * sum(sim_data['Modeled_Flow'] - obs_data['Observed_Flow']) / sum(obs_data['Observed_Flow'])
+
+        monthly_metrics['NSE'].append(nse)
+        monthly_metrics['RMSE'].append(rmse)
+        monthly_metrics['MAE'].append(mae)
+        monthly_metrics['PBIAS'].append(pbias)
+
+    return monthly_metrics
+
+# Initialize empty DataFrames to store monthly observed and simulated flows
+monthly_observed = pd.DataFrame()
+monthly_simulated = pd.DataFrame()
+
+# Loop through each month, run the model daily, and store monthly values
+for year_month, group in zip(data.index.to_period('M'), data.groupby(data.index.to_period('M'))):
+    _, month_data = group
+    X_month = month_data[['P(t)', 'Q(t-1)']].values
+
+    # Predict using the trained model
+    y_month_pred = svr.predict(X_month)
+
+    # Store the daily predictions
+    monthly_simulated = pd.concat([monthly_simulated, pd.DataFrame({'Date': month_data.index, 'Modeled_Flow': y_month_pred})])
+
+    # Store the observed flow for each day
+    monthly_observed = pd.concat([monthly_observed, pd.DataFrame({'Date': month_data.index, 'Observed_Flow': month_data['Q(t)'].values})])
+
+# Reset index for proper concatenation
+monthly_observed.reset_index(drop=True, inplace=True)
+monthly_simulated.reset_index(drop=True, inplace=True)
+
+# Set the index to datetime format
+monthly_observed['Date'] = pd.to_datetime(monthly_observed['Date'])
+monthly_simulated['Date'] = pd.to_datetime(monthly_simulated['Date'])
+
+# Calculate and save monthly metrics
+monthly_metrics = calculate_monthly_metrics(monthly_observed['Observed_Flow'], monthly_simulated['Modeled_Flow'])
+monthly_metrics_df = pd.DataFrame(monthly_metrics, index=monthly_observed['Date'].dt.to_period('M').unique())
+monthly_metrics_df.to_excel('monthly_metrics.xlsx')
+
+# Print the evaluation metrics
+print(f"Mean Squared Error (Train): {mse_train}")
+print(f"Mean Squared Error (Test): {mse_test}")
+print(f"NSE (Train): {nse_train}")
+print(f"NSE (Test): {nse_test}")
+print(f"RMSE (Train): {rmse_train}")
+print(f"RMSE (Test): {rmse_test}")
+print(f"MAE (Train): {mae_train}")
+print(f"MAE (Test): {mae_test}")
+print(f"PBIAS (Train): {p_bias_train}")
+print(f"PBIAS (Test): {p_bias_test}")
+
+
+# Save modeled flow in CSV files
+train_dates = data[:'2005-12-31'].index
+test_dates = data['2006-01-01':].index
+
+modeled_flow_train = pd.DataFrame({'Date': train_dates, 'Modeled_Flow': y_pred_train})
+modeled_flow_test = pd.DataFrame({'Date': test_dates, 'Modeled_Flow': y_pred_test})
+
+modeled_flow_train.to_csv('modeled_flow_train.csv', index=False)
+modeled_flow_test.to_csv('modeled_flow_test.csv', index=False)
